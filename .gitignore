@@ -1,0 +1,8 @@
+.gradle
+build/
+*~
+*.log
+*.class
+.idea/
+*.iml
+serviceAccountKey.json
