@@ -13,10 +13,16 @@ import com.google.firebase.messaging.Notification
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
+import kotlinx.coroutines.launch
 import java.io.FileInputStream
 
 fun main() {
     println("Initializing Firebase Admin SDK...")
+    
+    // Test scraper temporarily
+    println("--- SCRAPER TEST ---")
+    ScraperUtils.fetchSchemes()
+    println("--- END SCRAPER TEST ---")
     
     // 🔥 Replace "serviceAccountKey.json" with the path to your actual Firebase Admin key!
     // You download this from Firebase Console -> Project Settings -> Service Accounts -> "Generate new private key"
@@ -41,6 +47,7 @@ fun main() {
     }
 
     startListeners()
+    startScrapingTask()
 
     // Start a basic Ktor server just to keep the process alive
     embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
@@ -117,6 +124,36 @@ fun sendNotification(topic: String, title: String, body: String) {
     } catch (e: Exception) {
         println("Error sending notification to $topic:")
         e.printStackTrace()
+    }
+}
+
+fun startScrapingTask() {
+    val database = FirebaseDatabase.getInstance().reference
+    
+    // Launch a background coroutine
+    kotlinx.coroutines.GlobalScope.launch {
+        while(true) {
+            try {
+                println("Scraping for new schemes...")
+                val schemes = ScraperUtils.fetchSchemes()
+                
+                if (schemes.isNotEmpty()) {
+                    // Save to Firebase directly as a List so Firebase maintains the array order (0, 1, 2...)
+                    val listRef = database.child("schemes/list")
+                    
+                    listRef.setValueAsync(schemes).get() // Block until done
+                    println("Successfully updated ${schemes.size} schemes in Firebase.")
+                    
+                    // Trigger a notification by updating "latest" with the title of the first scheme
+                    database.child("schemes/latest").setValueAsync(schemes.first().title)
+                }
+            } catch (e: Exception) {
+                println("Error in scraping coroutine: ${e.message}")
+            }
+            
+            // Wait 12 hours between scrapes (12 * 60 * 60 * 1000)
+            kotlinx.coroutines.delay(12L * 60L * 60L * 1000L)
+        }
     }
 }
 

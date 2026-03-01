@@ -19,6 +19,9 @@ dependencies {
 
     // Firebase Admin Java SDK
     implementation("com.google.firebase:firebase-admin:9.2.0")
+
+    // JSoup for HTML parsing
+    implementation("org.jsoup:jsoup:1.15.3")
 }
 
 application {
