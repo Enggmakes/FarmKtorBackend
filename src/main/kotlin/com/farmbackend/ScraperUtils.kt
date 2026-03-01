@@ -15,28 +15,16 @@ object ScraperUtils {
     fun fetchSchemes(): List<Scheme> {
         val schemes = mutableListOf<Scheme>()
         try {
-            val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+            val userAgent = "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36"
             
-            // 1. Visit the home page first to get a session cookie
-            val homeResponse = Jsoup.connect("https://www.agriwelfare.gov.in/")
+            // Final attempt: Direct call to the target but with Google as the Referer
+            val doc = Jsoup.connect("https://agriwelfare.gov.in/en/Major")
                 .userAgent(userAgent)
-                .timeout(15000)
-                .execute()
-            val cookies = homeResponse.cookies()
-
-            // 2. Connect to the government website with extremely robust stealth headers and cookies
-            val doc = Jsoup.connect("https://www.agriwelfare.gov.in/en/Major")
-                .userAgent(userAgent)
-                .cookies(cookies)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .header("Referer", "https://www.agriwelfare.gov.in/")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.5")
+                .header("Referer", "https://www.google.com/")
+                .header("DNT", "1")
                 .header("Upgrade-Insecure-Requests", "1")
-                .header("Sec-Fetch-Dest", "document")
-                .header("Sec-Fetch-Mode", "navigate")
-                .header("Sec-Fetch-Site", "same-origin")
-                .header("Sec-Fetch-User", "?1")
-                .header("Connection", "keep-alive")
                 .timeout(30000)
                 .get()
             
