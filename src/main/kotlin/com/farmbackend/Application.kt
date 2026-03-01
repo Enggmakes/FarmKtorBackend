@@ -19,10 +19,8 @@ import java.io.FileInputStream
 fun main() {
     println("Initializing Firebase Admin SDK...")
     
-    // Test scraper temporarily
-    println("--- SCRAPER TEST ---")
-    ScraperUtils.fetchSchemes()
-    println("--- END SCRAPER TEST ---")
+    // Scraper is now handled on-device (Android App) to avoid IP blocking.
+    // Ktor backend remains as the listener and notification dispatcher.
     
     // 🔥 Replace "serviceAccountKey.json" with the path to your actual Firebase Admin key!
     // You download this from Firebase Console -> Project Settings -> Service Accounts -> "Generate new private key"
