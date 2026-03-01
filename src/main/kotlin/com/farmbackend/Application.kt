@@ -102,12 +102,8 @@ fun startListeners() {
 fun sendNotification(topic: String, title: String, body: String) {
     try {
         val message = Message.builder()
-            .setNotification(
-                Notification.builder()
-                    .setTitle(title)
-                    .setBody(body)
-                    .build()
-            )
+            .putData("title", title)
+            .putData("body", body)
             .setTopic(topic)
             .build()
 
