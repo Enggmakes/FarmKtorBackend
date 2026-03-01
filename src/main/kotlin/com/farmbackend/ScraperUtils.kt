@@ -15,8 +15,11 @@ object ScraperUtils {
     fun fetchSchemes(): List<Scheme> {
         val schemes = mutableListOf<Scheme>()
         try {
-            // Connect to the government website
-            val doc = Jsoup.connect("https://agriwelfare.gov.in/en/Major").timeout(10000).get()
+            // Connect to the government website with a User-Agent to avoid 403 Forbidden errors on cloud servers
+            val doc = Jsoup.connect("https://agriwelfare.gov.in/en/Major")
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
+                .timeout(10000)
+                .get()
             
             // Select all rows from the table in the main content area
             val rows = doc.select("table tbody tr, table tr")
