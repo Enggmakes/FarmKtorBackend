@@ -101,7 +101,12 @@ fun startListeners() {
 
 fun sendNotification(topic: String, title: String, body: String) {
     try {
+        val androidConfig = com.google.firebase.messaging.AndroidConfig.builder()
+            .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
+            .build()
+
         val message = Message.builder()
+            .setAndroidConfig(androidConfig)
             .putData("title", title)
             .putData("body", body)
             .setTopic(topic)
