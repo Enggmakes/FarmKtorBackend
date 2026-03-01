@@ -47,7 +47,9 @@ fun main() {
     }
 
     startListeners()
-    startScrapingTask()
+    // Scraper is disabled on Ktor because Render.com IPs are blocked by government firewall (403 Forbidden).
+    // Scraping logic has been moved to the Android App (WorkManager).
+    // startScrapingTask() 
 
     // Start a basic Ktor server just to keep the process alive
     embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
