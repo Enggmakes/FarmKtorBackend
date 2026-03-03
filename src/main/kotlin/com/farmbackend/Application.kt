@@ -13,6 +13,8 @@ import com.google.firebase.messaging.Notification
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
 
@@ -158,5 +160,9 @@ fun startScrapingTask() {
 }
 
 fun Application.module() {
-    // Basic Ktor module space, no HTTP routes strictly required since we only use Firebase listeners!
+    routing {
+        get("/") {
+            call.respondText("I am awake!")
+        }
+    }
 }
