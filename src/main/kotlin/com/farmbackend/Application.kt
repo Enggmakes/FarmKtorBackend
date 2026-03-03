@@ -9,7 +9,6 @@ import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.Message
-import com.google.firebase.messaging.Notification
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
@@ -47,46 +46,49 @@ fun main() {
         .start(wait = true)
 }
 
-// Track which deviceIds already have listeners so we don't double-register
-private val activeDeviceListeners = ConcurrentHashMap<String, Boolean>()
+/**
+ * Maps each deviceId → Set of all FCM tokens of users linked to that device.
+ * Multiple users can share the same ESP32 — all of them get notified.
+ */
+private val deviceTokens = ConcurrentHashMap<String, MutableSet<String>>()
 
 /**
- * Reads all users from Firebase, then for each user that has a deviceId + fcmToken,
- * registers sensor listeners scoped to that specific device.
- * Also watches for new users / token updates dynamically.
+ * Tracks which deviceIds already have Firebase listeners registered to avoid duplicates.
  */
+private val activeDeviceListeners = ConcurrentHashMap<String, Boolean>()
+
 fun startDynamicListeners() {
     val database = FirebaseDatabase.getInstance().reference
 
-    // Listen for scheme updates — sent to all users dynamically below
+    // Scheme updates → notify ALL registered users
     database.child("schemes/latest").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
             val schemeTitle = snapshot.getValue(String::class.java) ?: return
-            // Send scheme notification to every registered user's fcmToken
-            database.child("users").addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(usersSnapshot: DataSnapshot) {
-                    for (userSnap in usersSnapshot.children) {
-                        val token = userSnap.child("fcmToken").getValue(String::class.java) ?: continue
-                        sendNotificationToToken(token, "🌾 New Farmer Scheme", "A new scheme was announced: $schemeTitle")
-                    }
-                }
-                override fun onCancelled(error: DatabaseError) {}
-            })
+            val allTokens = deviceTokens.values.flatten().toSet()
+            allTokens.forEach { token ->
+                sendNotificationToToken(token, "🌾 New Farmer Scheme", "A new scheme was announced: $schemeTitle")
+            }
         }
         override fun onCancelled(error: DatabaseError) { println("Scheme listener error: ${error.message}") }
     })
 
-    // Watch the users node — registers device listeners for each user
+    // Watch all users — build deviceId → tokens map, register listeners for new devices
     database.child("users").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
             for (userSnap in snapshot.children) {
                 val deviceId = userSnap.child("deviceId").getValue(String::class.java) ?: continue
                 val fcmToken = userSnap.child("fcmToken").getValue(String::class.java) ?: continue
 
-                // Only register once per deviceId to avoid duplicate listeners
+                // Add token to the set for this device (handles multiple users per device)
+                val tokens = deviceTokens.getOrPut(deviceId) { ConcurrentHashMap.newKeySet() }
+                tokens.add(fcmToken)
+
+                // Register Firebase listeners only once per deviceId
                 if (activeDeviceListeners.putIfAbsent(deviceId, true) == null) {
-                    println("Registering listeners for device: $deviceId")
-                    registerDeviceListeners(database, deviceId, fcmToken)
+                    println("Registering listeners for device: $deviceId (currently ${tokens.size} user(s))")
+                    registerDeviceListeners(database, deviceId)
+                } else {
+                    println("Added token to existing device: $deviceId (now ${tokens.size} user(s))")
                 }
             }
         }
@@ -95,23 +97,22 @@ fun startDynamicListeners() {
 }
 
 /**
- * Registers moisture, temperature, and animal detection listeners for a specific device.
- * Notifications are sent directly to the user's FCM token.
+ * Registers sensor listeners for a specific device.
+ * Sends notifications to ALL users linked to this device via deviceTokens map.
  */
 fun registerDeviceListeners(
     database: com.google.firebase.database.DatabaseReference,
-    deviceId: String,
-    fcmToken: String
+    deviceId: String
 ) {
     // 1. Low Moisture
     database.child("devices/$deviceId/state/moistPct").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
             val moisture = snapshot.getValue(Long::class.java) ?: return
             if (moisture < 20) {
-                sendNotificationToToken(fcmToken, "🚨 Low Moisture", "Soil moisture on $deviceId dropped to $moisture%!")
+                notifyAllUsersForDevice(deviceId, "🚨 Low Moisture", "Soil moisture on $deviceId dropped to $moisture%!")
             }
         }
-        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Moisture listener error: ${error.message}") }
+        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Moisture error: ${error.message}") }
     })
 
     // 2. High Temperature
@@ -120,30 +121,35 @@ fun registerDeviceListeners(
             val tempStr = snapshot.value?.toString() ?: return
             val temp = tempStr.toFloatOrNull() ?: return
             if (temp > 35.0f) {
-                sendNotificationToToken(fcmToken, "⚠️ High Temperature", "Greenhouse temp on $deviceId is $temp°C!")
+                notifyAllUsersForDevice(deviceId, "⚠️ High Temperature", "Greenhouse temp on $deviceId is $temp°C!")
             }
         }
-        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Temp listener error: ${error.message}") }
+        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Temp error: ${error.message}") }
     })
 
-    // 3. Animal Detection (only alert on false → true transition)
+    // 3. Animal Detection (only on false → true transition)
     var previousAnimalState = false
     database.child("devices/$deviceId/state/animalDetected").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
-            val currentAnimalState = snapshot.getValue(Boolean::class.java) ?: return
-            if (!previousAnimalState && currentAnimalState) {
-                sendNotificationToToken(fcmToken, "🐗 Animal Intrusion!", "Motion detected on $deviceId. Check cameras!")
+            val current = snapshot.getValue(Boolean::class.java) ?: return
+            if (!previousAnimalState && current) {
+                notifyAllUsersForDevice(deviceId, "🐗 Animal Intrusion!", "Motion detected on $deviceId. Check cameras!")
             }
-            previousAnimalState = currentAnimalState
+            previousAnimalState = current
         }
-        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Animal listener error: ${error.message}") }
+        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Animal error: ${error.message}") }
     })
 }
 
 /**
- * Sends a push notification directly to a specific device's FCM token.
- * This ensures only the user whose device triggered the alert receives it.
+ * Sends a notification to every user linked to the given device.
  */
+fun notifyAllUsersForDevice(deviceId: String, title: String, body: String) {
+    val tokens = deviceTokens[deviceId] ?: return
+    println("Notifying ${tokens.size} user(s) for device: $deviceId")
+    tokens.forEach { token -> sendNotificationToToken(token, title, body) }
+}
+
 fun sendNotificationToToken(fcmToken: String, title: String, body: String) {
     try {
         val androidConfig = com.google.firebase.messaging.AndroidConfig.builder()
@@ -154,11 +160,11 @@ fun sendNotificationToToken(fcmToken: String, title: String, body: String) {
             .setAndroidConfig(androidConfig)
             .putData("title", title)
             .putData("body", body)
-            .setToken(fcmToken)  // ← Direct to this specific user, not a topic!
+            .setToken(fcmToken)
             .build()
 
         val response = FirebaseMessaging.getInstance().send(message)
-        println("Successfully sent notification to token: $response")
+        println("Sent notification: $response")
     } catch (e: Exception) {
         println("Error sending notification to token:")
         e.printStackTrace()
