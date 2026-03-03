@@ -15,17 +15,12 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.coroutines.launch
 import java.io.FileInputStream
+import java.util.concurrent.ConcurrentHashMap
 
 fun main() {
     println("Initializing Firebase Admin SDK...")
-    
-    // Scraper is now handled on-device (Android App) to avoid IP blocking.
-    // Ktor backend remains as the listener and notification dispatcher.
-    
-    // 🔥 Replace "serviceAccountKey.json" with the path to your actual Firebase Admin key!
-    // You download this from Firebase Console -> Project Settings -> Service Accounts -> "Generate new private key"
+
     try {
         val serviceAccountStream = if (System.getenv("FIREBASE_SERVICE_ACCOUNT") != null) {
             java.io.ByteArrayInputStream(System.getenv("FIREBASE_SERVICE_ACCOUNT").toByteArray())
@@ -35,7 +30,7 @@ fun main() {
 
         val options = FirebaseOptions.builder()
             .setCredentials(GoogleCredentials.fromStream(serviceAccountStream))
-            .setDatabaseUrl("https://farm-controlling-cb834-default-rtdb.firebaseio.com") // Replace with your FIREBASE DB URL
+            .setDatabaseUrl("https://farm-controlling-cb834-default-rtdb.firebaseio.com")
             .build()
 
         FirebaseApp.initializeApp(options)
@@ -46,69 +41,110 @@ fun main() {
         return
     }
 
-    startListeners()
-    // Scraper is disabled on Ktor because Render.com IPs are blocked by government firewall (403 Forbidden).
-    // Scraping logic has been moved to the Android App (WorkManager).
-    // startScrapingTask() 
+    startDynamicListeners()
 
-    // Start a basic Ktor server just to keep the process alive
     embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
         .start(wait = true)
 }
 
-fun startListeners() {
+// Track which deviceIds already have listeners so we don't double-register
+private val activeDeviceListeners = ConcurrentHashMap<String, Boolean>()
+
+/**
+ * Reads all users from Firebase, then for each user that has a deviceId + fcmToken,
+ * registers sensor listeners scoped to that specific device.
+ * Also watches for new users / token updates dynamically.
+ */
+fun startDynamicListeners() {
     val database = FirebaseDatabase.getInstance().reference
 
-    // 1. Listen for Low Moisture
-    database.child("devices/farm-esp32-01/state/moistPct").addValueEventListener(object : ValueEventListener {
+    // Listen for scheme updates — sent to all users dynamically below
+    database.child("schemes/latest").addValueEventListener(object : ValueEventListener {
+        override fun onDataChange(snapshot: DataSnapshot) {
+            val schemeTitle = snapshot.getValue(String::class.java) ?: return
+            // Send scheme notification to every registered user's fcmToken
+            database.child("users").addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(usersSnapshot: DataSnapshot) {
+                    for (userSnap in usersSnapshot.children) {
+                        val token = userSnap.child("fcmToken").getValue(String::class.java) ?: continue
+                        sendNotificationToToken(token, "🌾 New Farmer Scheme", "A new scheme was announced: $schemeTitle")
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            })
+        }
+        override fun onCancelled(error: DatabaseError) { println("Scheme listener error: ${error.message}") }
+    })
+
+    // Watch the users node — registers device listeners for each user
+    database.child("users").addValueEventListener(object : ValueEventListener {
+        override fun onDataChange(snapshot: DataSnapshot) {
+            for (userSnap in snapshot.children) {
+                val deviceId = userSnap.child("deviceId").getValue(String::class.java) ?: continue
+                val fcmToken = userSnap.child("fcmToken").getValue(String::class.java) ?: continue
+
+                // Only register once per deviceId to avoid duplicate listeners
+                if (activeDeviceListeners.putIfAbsent(deviceId, true) == null) {
+                    println("Registering listeners for device: $deviceId")
+                    registerDeviceListeners(database, deviceId, fcmToken)
+                }
+            }
+        }
+        override fun onCancelled(error: DatabaseError) { println("Users listener error: ${error.message}") }
+    })
+}
+
+/**
+ * Registers moisture, temperature, and animal detection listeners for a specific device.
+ * Notifications are sent directly to the user's FCM token.
+ */
+fun registerDeviceListeners(
+    database: com.google.firebase.database.DatabaseReference,
+    deviceId: String,
+    fcmToken: String
+) {
+    // 1. Low Moisture
+    database.child("devices/$deviceId/state/moistPct").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
             val moisture = snapshot.getValue(Long::class.java) ?: return
             if (moisture < 20) {
-                sendNotification("farm_alerts", "🚨 Low Moisture", "Soil moisture dropped to $moisture%!")
+                sendNotificationToToken(fcmToken, "🚨 Low Moisture", "Soil moisture on $deviceId dropped to $moisture%!")
             }
         }
-        override fun onCancelled(error: DatabaseError) { println("Moisture listener error: ${error.message}") }
+        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Moisture listener error: ${error.message}") }
     })
 
-    // 2. Listen for High Temp
-    database.child("devices/farm-esp32-01/state/tempC").addValueEventListener(object : ValueEventListener {
+    // 2. High Temperature
+    database.child("devices/$deviceId/state/tempC").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
             val tempStr = snapshot.value?.toString() ?: return
             val temp = tempStr.toFloatOrNull() ?: return
             if (temp > 35.0f) {
-                sendNotification("farm_alerts", "⚠️ High Temperature", "Greenhouse temp is $temp°C!")
+                sendNotificationToToken(fcmToken, "⚠️ High Temperature", "Greenhouse temp on $deviceId is $temp°C!")
             }
         }
-        override fun onCancelled(error: DatabaseError) { println("Temp listener error: ${error.message}") }
+        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Temp listener error: ${error.message}") }
     })
 
-    // 3. Listen for Animal Detection
+    // 3. Animal Detection (only alert on false → true transition)
     var previousAnimalState = false
-    database.child("devices/farm-esp32-01/state/animalDetected").addValueEventListener(object : ValueEventListener {
+    database.child("devices/$deviceId/state/animalDetected").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
             val currentAnimalState = snapshot.getValue(Boolean::class.java) ?: return
-            
-            // Only alert when changing from false -> true
             if (!previousAnimalState && currentAnimalState) {
-                sendNotification("farm_alerts", "🐗 Animal Intrusion!", "Motion detected on the farm. Check cameras!")
+                sendNotificationToToken(fcmToken, "🐗 Animal Intrusion!", "Motion detected on $deviceId. Check cameras!")
             }
             previousAnimalState = currentAnimalState
         }
-        override fun onCancelled(error: DatabaseError) { println("Animal listener error: ${error.message}") }
-    })
-
-    // 4. Listen for New Farmer Schemes
-    database.child("schemes/latest").addValueEventListener(object : ValueEventListener {
-        override fun onDataChange(snapshot: DataSnapshot) {
-            // Assume the snapshot contains the title of the scheme
-            val schemeTitle = snapshot.getValue(String::class.java) ?: return
-            sendNotification("scheme_updates", "🌾 New Farmer Scheme", "A new scheme was announced: $schemeTitle")
-        }
-        override fun onCancelled(error: DatabaseError) { println("Scheme listener error: ${error.message}") }
+        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Animal listener error: ${error.message}") }
     })
 }
 
-fun sendNotification(topic: String, title: String, body: String) {
+/**
+ * Sends a push notification directly to a specific device's FCM token.
+ * This ensures only the user whose device triggered the alert receives it.
+ */
+fun sendNotificationToToken(fcmToken: String, title: String, body: String) {
     try {
         val androidConfig = com.google.firebase.messaging.AndroidConfig.builder()
             .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
@@ -118,44 +154,14 @@ fun sendNotification(topic: String, title: String, body: String) {
             .setAndroidConfig(androidConfig)
             .putData("title", title)
             .putData("body", body)
-            .setTopic(topic)
+            .setToken(fcmToken)  // ← Direct to this specific user, not a topic!
             .build()
 
         val response = FirebaseMessaging.getInstance().send(message)
-        println("Successfully sent message to $topic: $response")
+        println("Successfully sent notification to token: $response")
     } catch (e: Exception) {
-        println("Error sending notification to $topic:")
+        println("Error sending notification to token:")
         e.printStackTrace()
-    }
-}
-
-fun startScrapingTask() {
-    val database = FirebaseDatabase.getInstance().reference
-    
-    // Launch a background coroutine
-    kotlinx.coroutines.GlobalScope.launch {
-        while(true) {
-            try {
-                println("Scraping for new schemes...")
-                val schemes = ScraperUtils.fetchSchemes()
-                
-                if (schemes.isNotEmpty()) {
-                    // Save to Firebase directly as a List so Firebase maintains the array order (0, 1, 2...)
-                    val listRef = database.child("schemes/list")
-                    
-                    listRef.setValueAsync(schemes).get() // Block until done
-                    println("Successfully updated ${schemes.size} schemes in Firebase.")
-                    
-                    // Trigger a notification by updating "latest" with the title of the first scheme
-                    database.child("schemes/latest").setValueAsync(schemes.first().title)
-                }
-            } catch (e: Exception) {
-                println("Error in scraping coroutine: ${e.message}")
-            }
-            
-            // Wait 12 hours between scrapes (12 * 60 * 60 * 1000)
-            kotlinx.coroutines.delay(12L * 60L * 60L * 1000L)
-        }
     }
 }
 
