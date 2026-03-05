@@ -133,7 +133,7 @@ fun registerDeviceListeners(
         override fun onDataChange(snapshot: DataSnapshot) {
             val current = snapshot.getValue(Boolean::class.java) ?: return
             if (!previousAnimalState && current) {
-                notifyAllUsersForDevice(deviceId, "🐗 Animal Intrusion!", "Motion detected on $deviceId. Check cameras!")
+                notifyAllUsersForDevice(deviceId, "🐗 Animal Intrusion!", "Motion detected on $deviceId. Check cameras!", "animal")
             }
             previousAnimalState = current
         }
@@ -144,24 +144,29 @@ fun registerDeviceListeners(
 /**
  * Sends a notification to every user linked to the given device.
  */
-fun notifyAllUsersForDevice(deviceId: String, title: String, body: String) {
+fun notifyAllUsersForDevice(deviceId: String, title: String, body: String, soundType: String? = null) {
     val tokens = deviceTokens[deviceId] ?: return
     println("Notifying ${tokens.size} user(s) for device: $deviceId")
-    tokens.forEach { token -> sendNotificationToToken(token, title, body) }
+    tokens.forEach { token -> sendNotificationToToken(token, title, body, soundType) }
 }
 
-fun sendNotificationToToken(fcmToken: String, title: String, body: String) {
+fun sendNotificationToToken(fcmToken: String, title: String, body: String, soundType: String? = null) {
     try {
         val androidConfig = com.google.firebase.messaging.AndroidConfig.builder()
             .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
             .build()
 
-        val message = Message.builder()
+        val messageBuilder = Message.builder()
             .setAndroidConfig(androidConfig)
             .putData("title", title)
             .putData("body", body)
             .setToken(fcmToken)
-            .build()
+
+        if (soundType != null) {
+            messageBuilder.putData("sound_type", soundType)
+        }
+
+        val message = messageBuilder.build()
 
         val response = FirebaseMessaging.getInstance().send(message)
         println("Sent notification: $response")
