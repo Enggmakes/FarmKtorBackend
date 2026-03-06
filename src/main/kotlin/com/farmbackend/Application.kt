@@ -127,7 +127,21 @@ fun registerDeviceListeners(
         override fun onCancelled(error: DatabaseError) { println("[$deviceId] Temp error: ${error.message}") }
     })
 
-    // 3. Animal Detection (only on false → true transition)
+    // 3. Humidity Alerts
+    database.child("devices/$deviceId/state/humidity").addValueEventListener(object : ValueEventListener {
+        override fun onDataChange(snapshot: DataSnapshot) {
+            val humidityStr = snapshot.value?.toString() ?: return
+            val humidity = humidityStr.toFloatOrNull() ?: return
+            if (humidity < 30.0f) {
+                notifyAllUsersForDevice(deviceId, "🚨 Low Humidity", "Greenhouse on $deviceId is too dry ($humidity%)!")
+            } else if (humidity > 80.0f) {
+                notifyAllUsersForDevice(deviceId, "⚠️ High Humidity", "High saturation on $deviceId: $humidity%!")
+            }
+        }
+        override fun onCancelled(error: DatabaseError) { println("[$deviceId] Humidity error: ${error.message}") }
+    })
+
+    // 4. Animal Detection (only on false → true transition)
     var previousAnimalState = false
     database.child("devices/$deviceId/state/animalDetected").addValueEventListener(object : ValueEventListener {
         override fun onDataChange(snapshot: DataSnapshot) {
